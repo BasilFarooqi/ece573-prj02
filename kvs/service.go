@@ -101,29 +101,52 @@ func keyValueDeleteHandler(w http.ResponseWriter, r *http.Request) {
 func initializeTransactionLog() error {
 	var err error
 
-	transact, err = NewPostgresTransactionLogger(PostgresDbParams{
-		host:     os.Getenv("POSTGRES_HOST"),
-		dbName:   "kvs",
-		user:     "test",
-		password: "hunter2",
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create transaction logger: %w", err)
+	// Read database configuration from environment variables
+	host := os.Getenv("POSTGRES_HOST")
+	dbName := os.Getenv("POSTGRES_DB")
+	user := os.Getenv("POSTGRES_USER")
+	password := os.Getenv("POSTGRES_PASSWORD")
+
+	// Default values for local or Docker use
+	if host == "" {
+		host = "postgres"
+	}
+	if dbName == "" {
+		dbName = "kvsdb"
+	}
+	if user == "" {
+		user = "admin"
+	}
+	if password == "" {
+		password = "admin123"
 	}
 
+	// Initialize PostgreSQL transaction logger
+	transact, err = NewPostgresTransactionLogger(PostgresDbParams{
+		host:     host,
+		dbName:   dbName,
+		user:     user,
+		password: password,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Replay past events to recover previous state
 	events, errors := transact.ReadEvents()
-	count, ok, e := 0, true, Event{}
+	count := 0
+	ok := true
+	var e Event
 
 	for ok && err == nil {
 		select {
 		case err, ok = <-errors:
-
 		case e, ok = <-events:
 			switch e.EventType {
-			case EventDelete: // Got a DELETE event!
+			case EventDelete:
 				err = Delete(e.Key)
 				count++
-			case EventPut: // Got a PUT event!
+			case EventPut:
 				err = Put(e.Key, e.Value)
 				count++
 			}
@@ -132,6 +155,7 @@ func initializeTransactionLog() error {
 
 	log.Printf("%d events replayed\n", count)
 
+	// Start transaction logger
 	transact.Run()
 
 	go func() {
@@ -144,16 +168,14 @@ func initializeTransactionLog() error {
 }
 
 func main() {
-	// Initializes the transaction log and loads existing data, if any.
-	// Blocks until all data is read.
+	// Initialize the transaction log and load previous data
 	err := initializeTransactionLog()
 	if err != nil {
 		panic(err)
 	}
 
-	// Create a new mux router
+	// Create a new router
 	r := mux.NewRouter()
-
 	r.Use(loggingMiddleware)
 
 	r.HandleFunc("/v1/{key}", keyValueGetHandler).Methods("GET")
